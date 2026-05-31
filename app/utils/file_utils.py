@@ -21,20 +21,7 @@ def parse_csv_upload(
     *,
     encoding: str = "utf-8-sig",
 ) -> Tuple[List[T], List[RowError]]:
-    """
-    Args:
-        file:     Werkzeug FileStorage from ``request.files``.
-        schema:   A Pydantic BaseModel subclass whose fields map to CSV columns.
-        encoding: Character encoding to use when decoding the file bytes.
-
-    Returns:
-        A 2-tuple ``(valid_rows, row_errors)`` where
-        * ``valid_rows``  is a list of validated *schema* instances.
-        * ``row_errors``  is a list of :class:`~app.schemas.RowError` objects
-          describing every row that did not pass validation.
-    Raises:
-        ValueError: If the uploaded file is empty or contains no data rows.
-    """
+    """ parses CSV file and returns valid and invalid rows as a tuple """
     raw_bytes: bytes = file.read()
 
     if not raw_bytes.strip():
@@ -52,8 +39,7 @@ def parse_csv_upload(
     row_errors: List[RowError] = []
 
     for row_index, raw_row in enumerate(reader, start=1):
-        # Replace empty strings with None so optional fields work correctly.
-        print(raw_row.items())
+        logger.debug("Raw CSV row %d: %s", row_index, list(raw_row.items()))
         cleaned = {k: (v if v != "" else None) for k, v in raw_row.items()}
         try:
             cleaned['row'] = row_index
