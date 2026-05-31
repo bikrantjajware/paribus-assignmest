@@ -42,7 +42,6 @@ class HospitalCreated(BaseModel):
     hospital_id: int
     name: str
     status: HospitalStatus
-    batch_id: str
 
 
 class BulkUploadResponse(BaseModel):

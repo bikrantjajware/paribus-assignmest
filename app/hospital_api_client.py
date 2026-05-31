@@ -4,7 +4,7 @@ from flask import current_app
 from app.db import DBHospital
 from app.schemas import HospitalRow
 
-class HospitalClient:
+class HospitalAPIClient:
     def __init__(self):
         self.base_url: str | None = None
         self.session: requests.Session | None = None
@@ -17,7 +17,7 @@ class HospitalClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
-    
+
     def _request(self, method: str, path: str, **kwargs):
         response = self.session.request(
             method,
@@ -36,6 +36,9 @@ class HospitalClient:
             "phone": hospital.phone,
             "creation_batch_id": batch_id,
         })
+    
+    def activate_hospitals_in_batch(self, batch_id: str):
+        return self._request("PATCH", f"/hospitals/batch/{batch_id}/activate")
 
     def get_hospital(self, hospital_id: int):
         return self._request("GET", f"/hospitals/{hospital_id}")

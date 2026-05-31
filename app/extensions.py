@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from app.hospital_client import HospitalClient
+from app.hospital_api_client import HospitalAPIClient
 
-hospital_client: HospitalClient = HospitalClient()
+hospital_api_client: HospitalAPIClient = HospitalAPIClient()

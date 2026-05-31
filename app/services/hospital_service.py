@@ -6,7 +6,7 @@ from typing import Tuple
 
 from werkzeug.datastructures import FileStorage
 
-from app.utils.hospital_utils import create_hospital
+from app.utils import hospital_utils
 from app.schemas import BulkUploadResponse, HospitalRow, HospitalStatus, RowError
 from app.utils.file_utils import parse_csv_upload
 
@@ -40,6 +40,7 @@ def process_bulk_upload(uploaded_file: FileStorage) -> Tuple[BulkUploadResponse,
     initial_status = HospitalStatus.CREATED.value
 
     created_hospitals = _persist_hospitals(valid_rows, batch_id, initial_status)
+    batch_activated = hospital_utils.activate_hospitals_in_batch(batch_id)
 
     response = BulkUploadResponse(
         batch_id=batch_id,
@@ -47,7 +48,7 @@ def process_bulk_upload(uploaded_file: FileStorage) -> Tuple[BulkUploadResponse,
         processed_hospitals=len(valid_rows),
         failed_hospitals=len(row_errors),
         processing_time_seconds=0,
-        batch_activated=False,
+        batch_activated=batch_activated,
         hospitals=created_hospitals,
     )
     return response, row_errors
@@ -69,7 +70,7 @@ def _persist_hospitals(
 
     for hospital in valid_rows:
         try:
-            db_hospital = create_hospital(hospital, batch_id, status)
+            db_hospital = hospital_utils.create_hospital(hospital, batch_id, status)
             created.append(
                 {
                     "row": db_hospital.row,

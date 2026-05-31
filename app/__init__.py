@@ -5,7 +5,7 @@ load_dotenv()
 import logging
 
 from flask import Flask, jsonify
-from app.extensions import hospital_client
+from app.extensions import hospital_api_client
 
 from app.routes import hospitals_bp
 
@@ -18,7 +18,7 @@ def create_app() -> Flask:
 
     app.register_blueprint(hospitals_bp)
     app.config["HOSPITAL_API_BASE_URL"] = os.getenv("HOSPITAL_API_BASE_URL")
-    hospital_client.init_app(app)
+    hospital_api_client.init_app(app)
 
     @app.route("/health", methods=["GET"])
     def health():
