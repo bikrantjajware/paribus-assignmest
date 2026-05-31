@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Tuple
+from datetime import datetime
+from typing import Tuple, Optional
 
 from werkzeug.datastructures import FileStorage
 
 from app.utils import hospital_utils
 from app.schemas import BulkUploadResponse, HospitalRow, HospitalStatus, RowError
 from app.utils.file_utils import parse_csv_upload
+from app.db import BatchStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +42,46 @@ def process_bulk_upload(uploaded_file: FileStorage) -> Tuple[BulkUploadResponse,
     batch_id = str(uuid.uuid4())
     initial_status = HospitalStatus.CREATED.value
 
-    created_hospitals = _persist_hospitals(valid_rows, batch_id, initial_status)
-    batch_activated = hospital_utils.activate_hospitals_in_batch(batch_id)
+    # save initial info for batch
+    BatchStore.create(batch_id, total_hospitals=total, row_errors=len(row_errors))
+    BatchStore.set_current(batch_id)
 
+    created_hospitals = _persist_hospitals(valid_rows, batch_id, initial_status)
+
+    batch_activated = hospital_utils.activate_hospitals_in_batch(batch_id)
+    BatchStore.set_activated(batch_id, batch_activated)
+    BatchStore.set_end_time(batch_id)
+
+    batch_entry = BatchStore.get(batch_id)
+    BatchStore.clear_current()
     response = BulkUploadResponse(
         batch_id=batch_id,
         total_hospitals=total,
         processed_hospitals=len(valid_rows),
         failed_hospitals=len(row_errors),
-        processing_time_seconds=0,
+        processing_time_seconds=int(((batch_entry.get("end_time") or datetime.utcnow()) - batch_entry["started_at"]).total_seconds()),
         batch_activated=batch_activated,
         hospitals=created_hospitals,
     )
     return response, row_errors
+
+
+def get_batch_status(batch_id: str) -> Optional[BulkUploadResponse]:
+    entry = BatchStore.get(batch_id)
+    if entry is None:
+        return None
+
+    elapsed = int(((entry.get("end_time") or datetime.utcnow()) - entry["started_at"]).total_seconds())
+
+    return BulkUploadResponse(
+        batch_id=batch_id,
+        total_hospitals=entry["total_hospitals"],
+        processed_hospitals=entry["processed_hospitals"],
+        failed_hospitals=entry["row_errors"],
+        processing_time_seconds=elapsed,
+        batch_activated=entry["batch_activated"],
+        hospitals=entry["hospitals"],
+    )
 
 
 def _persist_hospitals(
@@ -72,14 +101,17 @@ def _persist_hospitals(
     for hospital in valid_rows:
         try:
             db_hospital = hospital_utils.create_hospital(hospital, batch_id, status)
-            created.append(
-                {
-                    "row": db_hospital.row,
-                    "hospital_id": db_hospital.id,
-                    "name": db_hospital.name,
-                    "status": db_hospital.status
-                }
-            )
+            hospital_entry = {
+                "row": db_hospital.row,
+                "hospital_id": db_hospital.id,
+                "name": db_hospital.name,
+                "status": db_hospital.status
+            }
+            created.append(hospital_entry)
+
+            # Keep the store in sync so status polls reflect real-time progress.
+            BatchStore.append_hospital(batch_id, hospital_entry)
+
         except Exception as exc:
             logger.exception("Failed to persist hospital from row %d: %s", hospital.row, exc)
             raise RuntimeError(

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import time
-
 from flask import Blueprint, jsonify, request
 from werkzeug.datastructures import FileStorage
 
-from app.services.hospital_service import process_bulk_upload
+from app.services.hospital_service import process_bulk_upload, get_batch_status
+from app.db import BatchStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +36,7 @@ def bulk_upload():
             415,
         )
     try:
-        time_start = time.time()
         response, _row_errors = process_bulk_upload(uploaded_file)
-        time_end = time.time()
-        response.processing_time_seconds = int(time_end - time_start)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except UnicodeDecodeError:
@@ -53,3 +49,19 @@ def bulk_upload():
         return jsonify({"error": "something went wrong"}), 500
 
     return jsonify(response.model_dump()), 200
+
+
+@hospitals_bp.route("/bulk", methods=["GET"])
+@hospitals_bp.route("/bulk/<string:batch_id>", methods=["GET"])
+def get_bulk_status(batch_id: str = None):
+    """
+    Returns the current processing status for a given batch.
+    response format consistent with POST /hospitals/bulk endpoint
+    """
+    resolved_id = batch_id or BatchStore.get_current()
+    if resolved_id is None:
+        return jsonify({"error": "No batch_id provided and no batch is currently processing."}), 400
+    status = get_batch_status(resolved_id)
+    if status is None:
+        return jsonify({"error": f"No batch found with id '{resolved_id}'."}), 404
+    return jsonify(status.model_dump()), 200

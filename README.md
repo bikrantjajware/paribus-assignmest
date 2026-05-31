@@ -1,6 +1,6 @@
 # Hospital Bulk Upload API
 
-A Flask REST API that accepts a CSV file of hospital records, validates and persists each row via an external Hospital Directory API, then triggers a batch-activation call — all in a single `POST /hospitals/bulk` request.
+A Flask REST API that accepts a CSV file of hospital records, validates and persists each row via an external Hospital Directory API, triggers a batch-activation call, and exposes a polling endpoint to check batch processing status.
 
 ---
 
@@ -12,6 +12,7 @@ A Flask REST API that accepts a CSV file of hospital records, validates and pers
 - **External API Client** — A thin `HospitalAPIClient` wrapper (using `requests.Session`) communicates with the upstream Hospital Directory service for hospital creation and batch activation.
 - **Batch Activation** — After all valid rows are persisted remotely, a single `PATCH /hospitals/batch/{batch_id}/activate` call activates the entire batch; the in-memory store is updated to reflect this.
 - **Structured Response** — The endpoint returns a JSON summary with batch ID, counts, per-hospital statuses, processing time, and activation flag.
+- **Batch Status Polling** — `GET /hospitals/bulk/{batch_id}` (or `GET /hospitals/bulk` to query the most-recent batch) returns real-time progress from the in-memory `BatchStore`.
 - **Health Check** — `GET /health` for liveness probing.
 
 ---
@@ -33,7 +34,7 @@ A Flask REST API that accepts a CSV file of hospital records, validates and pers
 
 ### Separation of Concerns (layered architecture)
 
-`routes.py` it only handles HTTP requests (file presence, content-type guard, error-to-status mapping). All business logic lives in `services/hospital_service.py`, making the service testable in isolation without spinning up a Flask test client.
+`routes.py` only handles HTTP requests (file presence, content-type guard, error-to-status mapping). All business logic lives in `services/hospital_service.py`, making the service testable in isolation without spinning up a Flask test client.
 
 ### Pydantic v2 for validation
 
@@ -51,9 +52,10 @@ Using a shared `Session` object enables HTTP keep-alive connection pooling acros
 
 `create_app()` follows the Flask application factory pattern, which makes it straightforward to instantiate the app with different configs (e.g., test vs. production) and avoids circular import issues.
 
-### Batch activation as a single call
+### Consistent response shape for status polling
 
-Rather than activating each hospital individually after creation, all hospitals in a batch are activated with a single `PATCH /hospitals/batch/{batch_id}/activate` call. This reduces the number of external HTTP round-trips from `O(n)` to `O(1)` relative to the number of rows.
+`GET /hospitals/bulk/{batch_id}` returns the exact same `BulkUploadResponse` schema as
+`POST /hospitals/bulk`. This means callers can poll for progress without needing to handle a separate response model — the same deserialization code works for both endpoints.
 
 ---
 
@@ -65,12 +67,12 @@ paribus-assignment/
 │   ├── __init__.py              # App factory (create_app), blueprint registration
 │   ├── extensions.py            # Singleton HospitalAPIClient instance
 │   ├── hospital_api_client.py   # External API client (create, activate, CRUD)
-│   ├── db.py                    # In-memory store — DBHospital model + HOSPITALS dict
+│   ├── db.py                    # In-memory store — DBHospital + HOSPITALS dict, BatchStore for status polling
 │   ├── schemas.py               # Pydantic schemas (HospitalRow, BulkUploadResponse, …)
 │   ├── routes.py                # Blueprint — request/response layer only
 │   ├── services/
 │   │   ├── __init__.py
-│   │   └── hospital_service.py  # Business logic: orchestrates parse → persist → activate
+│   │   └── hospital_service.py  # Business logic: orchestrates parse → persist → activate → status polling
 │   └── utils/
 │       ├── file_utils.py        # Generic CSV parsing + Pydantic row validation
 │       └── hospital_utils.py    # Hospital-specific helpers (wraps client + DB write)
@@ -82,12 +84,12 @@ paribus-assignment/
 ### Layer Responsibilities
 
 ```
-routes.py          →  HTTP boundary (request parsing, error → HTTP status mapping)
-services/          →  Use-case orchestration (parse CSV → create hospitals → activate batch)
-utils/             →  Reusable helpers (CSV parsing, external API ↔ local DB bridge)
+routes.py               →  HTTP boundary (request parsing, error → HTTP status mapping)
+services/               →  Use-case orchestration (parse CSV → create hospitals → activate batch → status polling)
+utils/                  →  Reusable helpers (CSV parsing, external API ↔ local DB bridge)
 hospital_api_client.py  →  External HTTP calls (single responsibility)
-db.py              →  In-memory persistence model
-schemas.py         →  Shared data contracts (input + output)
+db.py                   →  In-memory persistence model + BatchStore for batch tracking
+schemas.py              →  Shared data contracts (input + output)
 ```
 
 ---
@@ -96,7 +98,7 @@ schemas.py         →  Shared data contracts (input + output)
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - `pip` (or `pip3`)
 
 ### 1. Clone & create a virtual environment
@@ -175,13 +177,13 @@ ruby hospital,em by pass road,122
       "hospital_id": 26,
       "name": "appolo",
       "row": 1,
-      "status": "created"
+      "status": "created_and_activated"
     },
     {
       "hospital_id": 27,
       "name": "ruby hospital",
       "row": 3,
-      "status": "created"
+      "status": "created_and_activated"
     }
   ],
   "processed_hospitals": 2,
@@ -197,6 +199,51 @@ ruby hospital,em by pass road,122
 | `400`  | Missing file, empty CSV, or no valid data rows |
 | `415`  | Uploaded file is not a CSV                     |
 | `500`  | Upstream API or persistence failure            |
+
+---
+
+### `GET /hospitals/bulk` · `GET /hospitals/bulk/{batch_id}`
+
+Poll the processing status of a batch. Both routes return the **same response shape** as `POST /hospitals/bulk`, making it easy to poll for progress without any additional parsing logic.
+
+- **`GET /hospitals/bulk/{batch_id}`** — Query a specific batch by its UUID.
+- **`GET /hospitals/bulk`** — Query the most-recently started batch (convenience shortcut; resolves via `BatchStore.get_current()`).
+
+**Path Parameter**
+
+| Parameter  | Type   | Required | Description                                                              |
+| ---------- | ------ | -------- | ------------------------------------------------------------------------ |
+| `batch_id` | string | ❌       | UUID returned by `POST /hospitals/bulk`. Omit to query the latest batch. |
+
+**Success Response** — `200 OK`
+
+```json
+{
+  "batch_id": "1a83c86e-0b29-41a0-8a4b-5444929d6906",
+  "total_hospitals": 3,
+  "processed_hospitals": 2,
+  "failed_hospitals": 1,
+  "processing_time_seconds": 11,
+  "batch_activated": true,
+  "hospitals": [
+    {
+      "row": 1,
+      "hospital_id": 26,
+      "name": "appolo",
+      "status": "created_and_activated"
+    }
+  ]
+}
+```
+
+**Error Responses**
+
+| Status | Cause                                                       |
+| ------ | ----------------------------------------------------------- |
+| `400`  | No `batch_id` provided and no batch is currently processing |
+| `404`  | No batch found for the given `batch_id`                     |
+
+---
 
 ### `GET /health`
 
