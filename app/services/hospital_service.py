@@ -45,13 +45,18 @@ def process_bulk_upload(uploaded_file: FileStorage) -> Tuple[BulkUploadResponse,
     # save initial info for batch
     BatchStore.create(batch_id, total_hospitals=total, row_errors=len(row_errors))
     BatchStore.set_current(batch_id)
+    created_hospitals = []
+    batch_activated = False
+    try:
+        created_hospitals = _persist_hospitals(valid_rows, batch_id, initial_status)
+    except RuntimeError as e:
+        pass
 
-    created_hospitals = _persist_hospitals(valid_rows, batch_id, initial_status)
-
-    batch_activated = hospital_utils.activate_hospitals_in_batch(batch_id)
-    BatchStore.set_activated(batch_id, batch_activated)
+    if len(created_hospitals) == total:
+        batch_activated = hospital_utils.activate_hospitals_in_batch(batch_id)
+        BatchStore.set_activated(batch_id, batch_activated)
+    
     BatchStore.set_end_time(batch_id)
-
     batch_entry = BatchStore.get(batch_id)
     BatchStore.clear_current()
     response = BulkUploadResponse(
